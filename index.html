@@ -1,0 +1,1076 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Illinois Public Sentiment – Counties & AHJs</title>
+
+<link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+<script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/fuse.js@6.6.2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
+
+<style>
+  :root{
+    --green:#16a34a; --orange:#f59e0b; --red:#ef4444; --grey:#9ca3af;
+    --panel-bg:#ffffff; --shadow:0 8px 28px rgba(0,0,0,.12);
+    --sidebar-w:380px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;background:#f5f7fb}
+  .topbar{
+    height:56px; display:flex; align-items:center; gap:16px; justify-content:space-between;
+    padding:0 16px; background:#fff; box-shadow:0 2px 12px rgba(0,0,0,.06); z-index:10;
+  }
+  .brand{display:flex; align-items:center; gap:10px}
+  .brand h1{font-size:16px; font-weight:600; margin:0}
+  .brand small{color:#6b7280}
+  .searchbar{display:flex; gap:8px; align-items:center}
+  .searchbar input{
+    width:320px; max-width:52vw; padding:8px 10px; border:1px solid #e5e7eb; border-radius:8px; outline:none;
+    box-shadow: inset 0 1px 0 rgba(0,0,0,.02);
+  }
+  .searchbar button{
+    padding:8px 12px; border:0; border-radius:8px; background:#3b82f6; color:#fff; font-weight:600; cursor:pointer;
+  }
+
+  /* layout: sidebar | splitter | map */
+  #app{display:grid; grid-template-columns: var(--sidebar-w) 6px 1fr; height:calc(100% - 56px)}
+
+  #sidebar{
+    background:var(--panel-bg); padding:16px; overflow:auto; box-shadow:var(--shadow); z-index:5;
+    min-width:260px; max-width:60vw;
+  }
+
+  #splitter{position:relative; cursor:col-resize; background:transparent;}
+  #splitter::after{content:''; position:absolute; inset:0; width:2px; margin-left:auto; margin-right:auto; background:#e5e7eb;}
+  #splitter:hover::after{ background:#cbd5e1; }
+  body.resizing{ user-select:none; cursor:col-resize; }
+
+  #map{position:relative}
+  #map canvas{outline:none}
+  .section{margin-bottom:16px; border:1px solid #eceff3; border-radius:10px; background:#fff}
+  .section h3{margin:0; padding:12px 14px; font-size:14px; border-bottom:1px solid #eceff3; background:#fafbfc}
+  .pad{padding:12px 14px}
+  .legend{display:grid; grid-template-columns: auto 1fr; gap:8px 10px; align-items:center}
+  .legend > div:nth-child(2n){ display:flex; align-items:center; }
+  .legend > div:nth-child(2n) .muted{ margin-left:auto; }
+
+  .swatch{width:18px;height:18px;border-radius:4px;border:1px solid #e5e7eb}
+  .sw-green{background:color-mix(in lab, var(--green) 70%, white)}
+  .sw-orange{background:color-mix(in lab, var(--orange) 70%, white)}
+  .sw-red{background:color-mix(in lab, var(--red) 70%, white)}
+  .sw-grey{background:color-mix(in lab, var(--grey) 70%, white)}
+  .tog{display:flex; gap:8px; align-items:center; margin-bottom:8px}
+  .stat{display:grid; grid-template-columns:repeat(3,1fr); gap:8px}
+  .stat .card{border:1px solid #eceff3;border-radius:8px;padding:10px;text-align:center}
+  .card b{display:block;font-size:18px}
+  #info h2{margin:0 0 6px 0; font-size:18px}
+  #info .pill{display:inline-block;padding:4px 8px;border-radius:14px;font-size:12px;font-weight:600}
+  .p-pos{background:color-mix(in lab, var(--green) 20%, white); color:#14532d}
+  .p-mix{background:color-mix(in lab, var(--orange) 20%, white); color:#7a3e00}
+  .p-neg{background:color-mix(in lab, var(--red) 20%, white); color:#7f1d1d}
+  .p-unk{background:color-mix(in lab, var(--grey) 25%, white); color:#374151}
+  .loading{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,.85); z-index:3; font-weight:600; color:#374151}
+  .mapboxgl-popup-content{font: 13px/1.3 system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial, sans-serif;}
+
+  .kv{ display:grid; grid-template-columns: minmax(110px,140px) 1fr; gap:6px 10px; font-size:13px; }
+  .kv dt{color:#6b7280; overflow-wrap:anywhere; word-break:break-word; white-space:normal;}
+  .kv dd{margin:0; color:#111827; overflow-wrap:anywhere; word-break:break-word; white-space:normal;}
+  .kv dd a{color:#2563eb; text-decoration:underline; word-break:break-all;}
+
+  .proj-item{border:1px solid #e5e7eb; border-radius:8px; margin-bottom:8px; overflow:hidden}
+  .proj-item summary{
+    cursor:pointer; list-style:none; padding:10px 12px; font-weight:600; background:#fafbfc;
+    white-space:normal; line-height:1.25; overflow-wrap:anywhere; word-break:break-word;
+    font-size:clamp(14px, 1.1vw, 20px);
+  }
+  .proj-item summary::-webkit-details-marker{display:none}
+  /* 左侧“书签”色条基础样式 */
+  .proj-item summary{
+    position: relative;
+    padding-left: 18px;
+  }
+  .proj-item summary::before{
+    content:'';
+    position:absolute; left:0; top:0; bottom:0;
+    width:8px;
+    border-top-left-radius:8px;
+    border-bottom-left-radius:8px;
+    background:#e5e7eb; /* 其它状态默认灰 */
+  }
+  /* 仅三种状态的颜色 */
+  .proj-item.st-approved     summary::before{ background: var(--green); }
+  .proj-item.st-denied       summary::before{ background: var(--red); }
+  .proj-item.st-undetermined summary::before{ background: var(--orange); }
+
+  .proj-body{
+    padding:10px 12px; font-size:clamp(12px, 0.95vw, 14px);
+    overflow-wrap:anywhere; word-break:break-word; white-space:normal;
+  }
+  .muted{color:#6b7280}
+    /* tiny status dot and center the dot */
+
+    /* Moratorium line */
+    .mor-row{
+    display:inline-flex;      /* keep it inline with other text */
+    align-items:center;       /* vertical centering */
+    gap:8px;                  /* space between dot and text */
+    }
+    .dot{
+    width:8px; height:8px; border-radius:50%;
+    display:inline-block;
+    }
+    .dot-green{ background: var(--green); }
+    .dot-red{   background: var(--red); }
+    .dot-grey{ background: var(--grey); }
+
+/* highlight + bold just for the Zoning value */
+.hl-zoning{
+  font-weight:700;
+  background: linear-gradient(transparent 38%, #fde68a 38%); /* soft yellow marker */
+  padding: 0 .2em;
+  border-radius: 2px;
+}
+
+  .sent-pill{
+    --c: var(--green);
+    display:flex; align-items:center; gap:6px;
+    padding:3px 8px; background:#fff; border-radius:999px;
+    border:2px solid var(--c); box-shadow:0 2px 6px rgba(0,0,0,.15);
+    color:#374151; font-weight:700; font-size:13px; line-height:1.1; white-space:nowrap;
+  }
+  .sent-pill .icon{display:inline-flex; width:18px; height:18px; color:var(--c)}
+  .sent-pill .icon svg{width:18px; height:18px; display:block}
+  .pill-pos{--c: var(--green)}
+  .pill-mix{--c: var(--orange)}
+  .pill-neg{--c: var(--red)}
+  .legend-link{
+  grid-column: 1 / -1;   /* 占满两列，贴左侧 */
+  margin-top: 2px;       /* 更靠上 */
+  padding: 0;            /* 不再额外右移 */
+}
+#score-link{
+  font-weight: 500;
+  font-size: 15px;
+  color: #6b7280;
+  text-decoration: underline;
+}
+#score-link:visited{ color:#6b7280; }
+
+
+  /* --- lightweight modal --- */
+  .modal-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:60}
+  .modal{background:#fff;border-radius:12px;box-shadow:var(--shadow);max-width:960px;max-height:80vh;overflow:auto;padding:18px 20px}
+  .modal h2{margin:0 0 8px 0;font-size:18px}
+  .modal .close{position:sticky;top:0;float:right;border:0;background:transparent;font-size:20px;cursor:pointer;color:#6b7280}
+  .modal pre{white-space:pre-wrap;font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;margin:8px 0 0}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand">
+      <h1>Illinois Public Sentiment Map</h1>
+      <small>Counties & AHJs • Mapbox</small>
+    </div>
+    <div class="searchbar">
+      <input id="searchInput" list="nameList" placeholder="Search county or AHJ" />
+      <datalist id="nameList"></datalist>
+      <button id="searchBtn">Search</button>
+    </div>
+  </div>
+
+  <div id="app">
+    <aside id="sidebar">
+      <div class="section">
+        <h3>Layers</h3>
+        <div class="pad">
+          <label class="tog"><input type="checkbox" id="toggle-counties" checked> Counties</label>
+          <label class="tog"><input type="checkbox" id="toggle-ahj" checked> AHJs</label>
+        </div>
+      </div>
+
+      <div class="section">
+  <h3 id="legend-title">Public sentiment distribution</h3>
+  <div class="pad legend">
+    <div class="swatch sw-green"></div>
+    <div id="lg-label-pos">Positive (≥ 70) <span id="lg-pos" class="muted"></span></div>
+
+    <div class="swatch sw-orange"></div>
+    <div id="lg-label-mix">Mixed (40–69) <span id="lg-mix" class="muted"></span></div>
+
+    <div class="swatch sw-red"></div>
+    <div id="lg-label-neg">Negative (&lt; 40) <span id="lg-neg" class="muted"></span></div>
+
+    <div class="swatch sw-grey"></div>
+    <div id="lg-label-unk">No data <span id="lg-unk" class="muted"></span></div>
+
+    <div class="legend-link">
+      <a id="score-link" href="#">How is the score calculated?</a>
+    </div>
+  </div>
+  
+      <div class="section" id="info">
+        <h3>Selection</h3>
+        <div class="pad">
+          <h2 id="sel-name">Click a county or AHJ</h2>
+          <div id="sel-type" style="color:#6b7280;margin-bottom:8px;"></div>
+          <div id="sel-score" style="font-size:14px;margin-bottom:8px;"></div>
+          <span id="sel-pill" class="pill p-unk">—</span>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>Jurisdiction Info</h3>
+        <div class="pad" id="juris-box"><span class="muted">Select an AHJ or county…</span></div>
+      </div>
+
+      <div class="section">
+        <h3>Projects</h3>
+        <div class="pad" id="projects-box"><span class="muted">No selection</span></div>
+      </div>
+    </aside>
+
+    <div id="splitter" title="Drag to resize"></div>
+
+    <main id="map">
+      <div class="loading" id="loading">Loading map & data…</div>
+    </main>
+  </div>
+
+  <!-- Modal container -->
+  <div id="score-modal" class="modal-overlay" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="score-title">
+      <button class="close" id="score-close" aria-label="Close">✕</button>
+      <h2 id="score-title">AHJ Public Sentiment Scoring — Summary</h2>
+      <pre id="score-content"></pre>
+    </div>
+  </div>
+
+<script>
+  mapboxgl.accessToken = 'pk.eyJ1Ijoiemh3MDc0IiwiYSI6ImNtN2Rxc3A5ZTA1djAya3EzanZoNTExcXMifQ.3DeLiMbZiACXq-l6BeUmTA';
+  const map = new mapboxgl.Map({
+    container: 'map',
+    style: 'mapbox://styles/mapbox/satellite-streets-v12',
+    center: [-89.3, 40.0],
+    zoom: 6.2
+  });
+  map.addControl(new mapboxgl.NavigationControl({showCompass:false}));
+  map.addControl(new mapboxgl.ScaleControl());
+
+  (function initSplitter(){
+    const root = document.documentElement;
+    const sidebar = document.getElementById('sidebar');
+    const splitter = document.getElementById('splitter');
+
+    const saved = parseInt(localStorage.getItem('sidebarW')||'0',10);
+    if (saved) root.style.setProperty('--sidebar-w', saved+'px');
+
+    let startX=0, startW=0;
+    const MIN=260;
+
+    function clamp(w){
+      const MAX = Math.floor(window.innerWidth * 0.6);
+      return Math.min(Math.max(w, MIN), MAX);
+    }
+    function apply(w){
+      const cw = clamp(w);
+      root.style.setProperty('--sidebar-w', cw+'px');
+      localStorage.setItem('sidebarW', String(cw));
+      map.resize();
+    }
+
+    splitter.addEventListener('mousedown', (e)=>{
+      startX = e.clientX;
+      startW = sidebar.getBoundingClientRect().width;
+      document.body.classList.add('resizing');
+      const move = (ev)=> apply(startW + (ev.clientX - startX));
+      const up   = ()=>{
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+        document.body.classList.remove('resizing');
+      };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
+
+    splitter.addEventListener('dblclick', ()=> apply(360));
+    new ResizeObserver(()=>{ try{ map.resize(); }catch(e){} }).observe(sidebar);
+  })();
+
+  const norm = s => (s||'').toString().normalize('NFKD').replace(/\s+/g,' ').trim().toUpperCase();
+  const getName = props => props.name ?? props.NAME ?? props.NAMELSAD ?? props.AHJ_NAME ?? props['AHJ Name'];
+  const isNum = v => typeof v === 'number' && Number.isFinite(v);
+  const categorize = s => isNum(s) ? (s >= 70 ? 'Positive' : (s >= 40 ? 'Mixed' : 'Negative')) : 'Unknown';
+  const emojiFor = s => !isNum(s) ? '❔' : (s >= 70 ? '😊' : (s >= 40 ? '😐' : '☹️'));
+  const countyKey = s => norm(s).replace(/\bCOUNTY\b/g,'').replace(/[, ]+IL(LINOIS)?\b/g,'').trim();
+
+  const CSS = getComputedStyle(document.documentElement);
+  const C_GREEN  = CSS.getPropertyValue('--green').trim();
+  const C_ORANGE = CSS.getPropertyValue('--orange').trim();
+  const C_RED    = CSS.getPropertyValue('--red').trim();
+  const C_GREY   = CSS.getPropertyValue('--grey').trim();
+
+  /* ===== Scoring help modal wiring (added) ===== */
+  const SCORE_DOC = `AHJ PUBLIC SENTIMENT SCORING — SUMMARY
+
+Per-Project Signals
+• Votes → V_effective
+– Try to parse City Council votes first (supports 7-0-2, 7-0, “All ayes (unanimous)”, 13-1-1, Yea/Nay). Abstentions are included in the denominator.
+– If no council tally, but a PC/ZBA recommendation ratio is found, use a shrunk proxy:
+V_effective = 0.5 + β × (rec_ratio − 0.5) with β = 0.50.
+• Status → S
+– Map: Approved → 1.0; Denied → 0.0; otherwise → 0.5.
+• Approval Affinity → A
+– Blend votes and status: A = 0.5 × V_effective + 0.5 × S (range 0…1).
+• Tri-level approval flag (for weights & recent swing)
+– Based on Status only: approved = 1.0 if S>0.5; 0.5 if S==0.5; 0.0 if S<0.5.
+• Concerns → H
+– Count items in “Citizen Concerns” and “Official Concerns”.
+– Exponential decay (officials weigh more):
+H = 0.4·exp(−0.30·citizen_count) + 0.6·exp(−0.30·official_count).
+• Zoning bonus
+– If zoning text contains “AG” or “agricultur*”, add +3 to the per-project score.
+• Size / MW extraction
+– Parse MW (convert kW→MW).
+– If no MW/kW but acreage appears, approximate MW ≈ acres / 5.0.
+
+Per-Project Score
+• project_score = 100 × (0.7 × A + 0.3 × H)
+• Then add the +3 zoning bonus if applicable.
+
+Per-Project Weight (influence of a project)
+• Size band (5–20 MW peak) using a smooth raised-cosine profile.
+– Compute a raw size weight with a peak factor size_focus_boost = 1.6 inside 5–20 MW; taper below/above.
+– Gate the boost by the approval flag:
+size_w_eff = 1 + (size_w_raw − 1) × approved
+(full boost if approved=1.0, half if 0.5, none if 0.0).
+• Recency: half-life ≈ 3 years with an extra ×1.25 multiplier if age ≤ 2 years:
+recency_weight = 0.5^(age_years / 3.0) then ×1.25 if ≤2y.
+• Approval tilt: approve_w = 0.8 + 0.4 × A.
+• Total per-project weight:
+weight = size_w_eff × recency_weight × approve_w.
+
+AHJ-Level Aggregation
+• Base = weighted average of project_score using each project’s weight.
+• Experience bonus (saturating with count):
+count_bonus = 4.0 × tanh(0.45 × max(n − 1, 0)).
+• Very-recent swing (current year + last year only)
+– Build a recent mask on project years ∈ {this year, last year}.
+– Count only clear outcomes:
+recent_approvals = # recent with approved == 1.0
+recent_denials = # recent with approved == 0.0
+Denominator denom = max(# recent, 1) (ties 0.5 are neutral: in denom, not in numerators).
+– Signals:
+recent_signal = recent_approvals / denom
+recent_denial_signal = recent_denials / denom
+– Convert to nudges (smooth, saturating):
+recent_bonus = 4.0 × (1 − exp(−2.0 × recent_signal))
+recent_denial_penalty = 4.0 × (1 − exp(−2.0 × recent_denial_signal)).
+• Past-any bonus: add +2 if any row has Past Solar Project? == "yes".
+• Final AHJ score (clipped 0…100):
+public_sentiment = clip(base + count_bonus + recent_bonus − recent_denial_penalty + past_any_bonus, 0, 100).
+
+No-History Rule (output post-processing)
+• If an AHJ has has_past == 0 in the output, set all numeric diagnostics to 0 and set public_sentiment = 50 (neutral baseline).
+• Results are then sorted by public_sentiment descending.
+
+Defaults referenced above (from code):
+• Concern decay k = 0.30.
+• Size band: focus 5–20 MW, size_focus_boost = 1.6.
+• Recency: half-life 3.0 years; ≤2 years boost 1.25.
+• Recommendation shrinkage β = 0.50.
+• Acreage fallback: MW ≈ acres / 5.0.
+• Bonuses/penalties max: count_bonus_max = 4.0, recent_bonus_max = 4.0, recent_denial_max = 4.0.`;
+
+  (function scoreHelpInit(){
+    const link   = document.getElementById('score-link');
+    const modal  = document.getElementById('score-modal');
+    const closeB = document.getElementById('score-close');
+    const content = document.getElementById('score-content');
+
+    function open(){ content.textContent = SCORE_DOC; modal.style.display = 'flex'; modal.setAttribute('aria-hidden','false'); }
+    function close(){ modal.style.display = 'none'; modal.setAttribute('aria-hidden','true'); }
+
+    link?.addEventListener('click', (e)=>{ e.preventDefault(); open(); });
+    closeB?.addEventListener('click', close);
+    modal?.addEventListener('click', (e)=>{ if(e.target===modal) close(); });
+    document.addEventListener('keydown', (e)=>{ if(e.key==='Escape') close(); });
+  })();
+  /* ===== end scoring modal ===== */
+
+  const state = {
+    ahjSent: new Map(),
+    countySent: new Map(),
+    countiesFC: null,
+    ahjFC: null,
+    fuse: null,
+    searchItems: [],
+    lookupCounty: new Map(),
+    lookupAhj: new Map(),
+    canonicalCountyIndex: new Map(),
+    countyCentersFC: null,
+    projectAHJRows: new Map(),
+    projectByAHJCountyKey: new Map(),
+    countyMarkers: []
+  };
+
+  // ------- helpers for the details panels -------
+  const HTML = {
+    esc: s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),
+    // NEW: turn plain URLs into clickable links (escapes non-URL text)
+    linkify: text => {
+      const str = String(text ?? '');
+      const urlRe = /(https?:\/\/[^\s<>"']+)/gi;
+
+      const parts = [];
+      let last = 0;
+
+      str.replace(urlRe, (match, _1, offset) => {
+        const before = str.slice(last, offset).trim();
+        if (before) parts.push(HTML.esc(before));
+        parts.push(
+          `<a href="${HTML.esc(match)}" target="_blank" rel="noopener">${HTML.esc(match)}</a>`
+        );
+        last = offset + match.length;
+        return match;
+      });
+
+      const tail = str.slice(last).trim();
+      if (tail) parts.push(HTML.esc(tail));
+      return parts.length ? parts.join('<br><br>') : HTML.esc(str);
+    },
+
+    listKV: obj => {
+      const keys = Object.keys(obj);
+      if (!keys.length) return '<span class="muted">—</span>';
+      return '<dl class="kv">' + keys.map(k => {
+        const v = obj[k];
+        // allow {__html: "..."} to render raw HTML (for concerns)
+        const html = v && typeof v === 'object' && v.__html != null
+          ? String(v.__html)
+          : HTML.linkify(String(v ?? ''));
+
+        const wrapped = (k === 'Zoning') ? `<span class="hl-zoning">${html}</span>` : html;
+        return `<dt>${HTML.esc(k)}</dt><dd>${wrapped}</dd>`;
+
+      }).join('') + '</dl>';
+    }
+  };
+  function summarize(rows, fields){
+  const out = {};
+  fields.forEach(k => {
+    const vals = [...new Set(rows.map(r => r[k]).filter(v => v !== '' && v != null))];
+    if (!vals.length) return;
+    // show only one unique map link
+    out[k] = (k === 'Zoning Map') ? vals[0] : vals.join(', ');
+  });
+  return out;
+}
+
+  function renderJurisdictionBox(rows){
+  const box = document.getElementById('juris-box');
+  if (!rows || !rows.length){
+    box.innerHTML = '<span class="muted">No extra info found.</span>';
+    return;
+  }
+  const fields = [
+    'AHJ Type','County','Electric Utility','Comprehensive Plan',
+    'Zoning Map',                // ← add this
+    'Past Solar Project?'
+  ];
+  box.innerHTML = HTML.listKV(summarize(rows, fields));
+}
+
+
+  // Only these columns in Projects
+  const COLS = [
+    {label:'Project Names', keys:['Project Names','Project Name','Project']},
+    {label:'Status', keys:['Status']},
+    {label:'Approval/Denial Year', keys:['Approval/Denial Year','Year']},
+    {label:'Council Votes', keys:['Council Votes']},
+    {label:'Zoning', keys:['Zoning']},
+    {label:'Project Size (MW)', keys:['Project Size (MW)','Project Size','Size (MW)']},
+    {label:'Citizen Concerns', keys:['Citizen Concerns']},
+    {label:'Official Concerns', keys:['Official Concerns']},
+    {label:'Parcel ID/Address', keys:['Parcel ID/Address','Parcel ID','Address','Parcel']},
+    {label:'Reference Link', keys:['Reference Link','Reference Link ']},
+    {label:'AHJ Download Folder', keys:['AHJ Download Folder','AHJ Download Folder ']}
+  ];
+  function getVal(row, keys){ for(const k of keys){ if(row[k]!=null && row[k]!== '') return row[k]; } return ''; }
+
+  // split long concerns into bullet lines
+  // split long concerns into bullet lines; show plain N/A with no bullet
+  function formatConcernsText(s){
+  const t = String(s || '').replace(/\r?\n+/g, ' ').trim();
+  if (!t) return '';
+
+  // If value is just "N/A" (optionally with a leading dash), return plain N/A
+  if (/^(?:[-–—]\s*)?n\/?\s*a$/i.test(t)) return HTML.esc('N/A');
+
+  // Otherwise bulletize hyphen-led items
+  const bulletized = t.replace(/(^|[^\p{L}\p{N}])[–—-]\s*/gu, '$1\n- ').trim();
+  const lines = bulletized.split('\n')
+    .map(x => x.trim())
+    .filter(Boolean)
+    .map(x => x.startsWith('- ') ? x.slice(2) : x);
+
+  return lines.map(x => `- ${HTML.esc(x)}`).join('<br>');
+}
+
+// keep track of whether a feature is currently selected
+state.currentSelection = null;
+
+// reset legend row labels back to the sentiment view
+function setLegendLabelsToSentiment(){
+  document.getElementById('lg-label-pos').innerHTML = 'Positive (≥ 70) <span id="lg-pos" class="muted"></span>';
+  document.getElementById('lg-label-mix').innerHTML = 'Mixed (40–69) <span id="lg-mix" class="muted"></span>';
+  document.getElementById('lg-label-neg').innerHTML = 'Negative (&lt; 40) <span id="lg-neg" class="muted"></span>';
+  document.getElementById('lg-label-unk').innerHTML = 'No data <span id="lg-unk" class="muted"></span>';
+}
+
+// switch legend row labels to the project view
+function setLegendLabelsToProject(){
+  document.getElementById('legend-title').textContent = 'Project distribution';
+  document.getElementById('lg-label-pos').innerHTML = 'Approved <span id="lg-pos" class="muted"></span>';
+  document.getElementById('lg-label-mix').innerHTML = 'Undetermined <span id="lg-mix" class="muted"></span>';
+  document.getElementById('lg-label-neg').innerHTML = 'Denied <span id="lg-neg" class="muted"></span>';
+  document.getElementById('lg-label-unk').innerHTML = 'No status <span id="lg-unk" class="muted"></span>'; // optional 4th line
+}
+
+// count statuses for a set of project rows
+function countProjectStatuses(rows){
+  const projRows = (rows || []).filter(looksLikeProjectRow);
+  let approved = 0, denied = 0, undet = 0, nostatus = 0;
+
+  projRows.forEach(r=>{
+    const s = shortStatus(getVal(r,['Status']));   // e.g., "Approved", "Denied", "Undetermined", ""
+    if (!s){
+      nostatus++; return;
+    }
+    const t = s.toLowerCase();
+    if (t === 'approved') approved++;
+    else if (t === 'denied') denied++;
+    else undet++;
+  });
+
+  return { approved, denied, undet, nostatus, total: approved+denied+undet+nostatus };
+}
+
+// render the legend as "Project distribution" for the given rows
+function updateProjectLegend(rows){
+  setLegendLabelsToProject();
+
+  const {approved, denied, undet, nostatus, total} = countProjectStatuses(rows);
+  const pct = n => total ? Math.round((n*1000)/total)/10 : 0;
+
+  document.getElementById('lg-pos').textContent = `${approved.toLocaleString()} (${pct(approved)}%)`;
+  document.getElementById('lg-mix').textContent = `${undet.toLocaleString()} (${pct(undet)}%)`;
+  document.getElementById('lg-neg').textContent = `${denied.toLocaleString()} (${pct(denied)}%)`;
+  document.getElementById('lg-unk').textContent = `${nostatus.toLocaleString()} (${pct(nostatus)}%)`;
+}
+
+
+  function cleanProjectName(name){ return String(name||'').replace(/\s*\(\s*\d{4}\s*\)\s*$/,'').trim(); }
+  function shortStatus(s){
+    const t = String(s || '').trim();
+    if (!t) return '';
+    const firstToken = t.split(/\s+/)[0].replace(/[\p{P}\p{S}]+$/u, '');
+    return firstToken ? firstToken.charAt(0).toUpperCase() + firstToken.slice(1).toLowerCase() : '';
+  }
+// Treat strings like "", "-", "—", "N/A", "NA", "None" as not meaningful
+function isMeaningful(v){
+  const t = String(v ?? '').trim();
+  if (!t) return false;
+  return !/^(?:n\/?a|na|none|—+|-+)$/i.test(t);
+}
+
+// A row is a "real project" if it has a meaningful name/status/year/size
+function looksLikeProjectRow(r){
+  return (
+    isMeaningful(getVal(r, ['Project Names','Project Name','Project'])) ||
+    isMeaningful(getVal(r, ['Status'])) ||
+    isMeaningful(getVal(r, ['Approval/Denial Year','Year'])) ||
+    isMeaningful(getVal(r, ['Project Size (MW)','Project Size','Size (MW)']))
+  );
+}
+
+  function renderProjectsBox(rows){
+  const box = document.getElementById('projects-box');
+
+  // Nothing selected at all
+  if (!rows || !rows.length){
+    box.innerHTML = '<span class="muted">No projects for this selection.</span>';
+    return;
+  }
+
+  // If Past Solar Project? is explicitly "No", show the empty message
+  const pastVals = [...new Set(
+    rows.map(r => (r['Past Solar Project?'] ?? '').toString().trim()).filter(Boolean)
+  )];
+  const allPastNo = pastVals.length && pastVals.every(v => /^no$/i.test(v));
+
+  // Keep only rows that actually look like projects
+  const projRows = rows.filter(looksLikeProjectRow);
+
+  if (allPastNo || projRows.length === 0){
+    box.innerHTML = '<span class="muted">No projects for this selection.</span>';
+    return;
+  }
+
+  // Sort newest first
+  const rowsSorted = projRows.slice().sort((a,b)=>
+    (parseInt(getVal(b,['Approval/Denial Year','Year']))||0) -
+    (parseInt(getVal(a,['Approval/Denial Year','Year']))||0)
+  );
+
+  const items = rowsSorted.map((r,idx)=>{
+    const rawName   = getVal(r,['Project Names','Project Name','Project']);
+    const nameClean = cleanProjectName(rawName) || `Project ${idx+1}`;
+    const status    = shortStatus(getVal(r,['Status']));
+    const year      = String(getVal(r,['Approval/Denial Year','Year'])).trim();
+
+    // size suffix (skip if blank or N/A)
+    const sizeRaw = String(getVal(r,['Project Size (MW)','Project Size','Size (MW)'])).trim();
+    const sizeOk  = isMeaningful(sizeRaw);
+
+    const title = `${nameClean}${status ? ' – ' + status : ''}${year ? ' (' + year + ')' : ''}${sizeOk ? ' - ' + sizeRaw : ''}`;
+
+    const kv = {};
+    COLS.forEach(c=>{
+      const v = getVal(r,c.keys);
+      if (v === '') return;
+      if (c.label === 'Citizen Concerns' || c.label === 'Official Concerns'){
+        kv[c.label] = { __html: formatConcernsText(v) };
+      } else {
+        kv[c.label] = v;
+      }
+    });
+
+    return `<details class="proj-item st-${(status || 'unknown').toLowerCase()}" ${idx===0?'open':''}>
+  <summary>${HTML.esc(title)}</summary>
+  <div class="proj-body">${HTML.listKV(kv)}</div>
+</details>`;
+  }).join('');
+
+  box.innerHTML = items;
+}
+
+
+  Promise.all([
+    fetch('illinois_counties.geojson').then(r => r.json()),
+    fetch('illinois_ahj.geojson').then(r => r.json()),
+    fetch('sentiment.csv').then(r => r.text()),
+    fetch(encodeURI('Ameren Muni Public Sentiment Research - Sentiment Research.csv')).then(r => r.text())
+  ]).then(([counties, ahj, sentimentCsvText, projectCsvText]) => {
+    // sentiment split by AHJ Type
+    const sRows = Papa.parse(sentimentCsvText, {header:true, dynamicTyping:true, skipEmptyLines:true}).data;
+    sRows.forEach(r => {
+      const score = Number(r['public_sentiment']);
+      if (!Number.isFinite(score)) return;
+
+      const typeRaw = (r['AHJ Type'] ?? '').toString().trim().toUpperCase();
+      const ahjNameRaw = r['AHJ Name'];
+
+      if (typeRaw === 'COUNTY') {
+        const k = countyKey(ahjNameRaw || r['County'] || r['county'] || '');
+        if (k) state.countySent.set(k, score);
+      } else {
+        const ahjKey = norm(ahjNameRaw);
+        if (ahjKey) state.ahjSent.set(ahjKey, score);
+      }
+    });
+
+    const pRows = Papa.parse(projectCsvText, {header:true, dynamicTyping:false, skipEmptyLines:true}).data;
+    pRows.forEach(r=>{
+      const ahjKey = norm(r['AHJ Name'] || '');
+      if (ahjKey){
+        if (!state.projectAHJRows.has(ahjKey)) state.projectAHJRows.set(ahjKey, []);
+        state.projectAHJRows.get(ahjKey).push(r);
+
+        const ck = countyKey(r['AHJ Name'] || '');
+        if (ck){
+          if (!state.projectByAHJCountyKey.has(ck)) state.projectByAHJCountyKey.set(ck, []);
+          state.projectByAHJCountyKey.get(ck).push(r);
+        }
+      }
+    });
+
+    function enrichFC(fc, level){
+      fc.features.forEach(f => {
+        const disp = getName(f.properties);
+        f.properties.display_name = disp;
+
+        if (level === 'ahj'){
+          const s = state.ahjSent.get(norm(disp));
+          if (Number.isFinite(s)) f.properties.public_sentiment = s;
+          state.lookupAhj.set(disp, f);
+          state.searchItems.push({ name: disp, type: 'AHJ' });
+        } else {
+          const k = countyKey(disp);
+          const s = state.countySent.get(k);
+          if (Number.isFinite(s)) f.properties.public_sentiment = s;
+          state.lookupCounty.set(disp, f);
+          state.canonicalCountyIndex.set(k, f);
+          state.searchItems.push({ name: disp, type: 'County' });
+        }
+        f.properties.category = categorize(f.properties.public_sentiment);
+      });
+      return fc;
+    }
+
+    state.countiesFC = enrichFC(counties,'county');
+    state.ahjFC      = enrichFC(ahj,'ahj');
+
+    state.countyCentersFC = {
+      type: 'FeatureCollection',
+      features: state.countiesFC.features.map(f => {
+        const pt = turf.centerOfMass(f).geometry.coordinates;
+        const s  = f.properties.public_sentiment;
+        return {
+          type:'Feature',
+          geometry:{ type:'Point', coordinates: pt },
+          properties:{
+            display_name: f.properties.display_name,
+            public_sentiment: s,
+            label: categorize(s),
+            emoji: emojiFor(s)
+          }
+        };
+      })
+    };
+
+    state.fuse = new Fuse(state.searchItems, {
+      includeScore:true, shouldSort:true, threshold:0.35, ignoreLocation:true, minMatchCharLength:2, keys:['name']
+    });
+    const dl = document.getElementById('nameList');
+    state.searchItems.forEach(it => { const o=document.createElement('option'); o.value=it.name; dl.appendChild(o); });
+
+    function updateLegendCounts(includeCounties, includeAhj){
+   setLegendLabelsToSentiment();
+  const titleEl = document.getElementById('legend-title');
+  if (includeCounties && includeAhj){
+    titleEl.textContent = 'Public sentiment distribution';          // AHJ + County 总和
+  } else if (includeAhj){
+    titleEl.textContent = 'Public sentiment distribution for AHJs';
+  } else if (includeCounties){
+    titleEl.textContent = 'Public sentiment distribution for Counties';
+  } else {
+    titleEl.textContent = 'Public sentiment distribution';
+  }
+
+  // 选中图层的全部要素相加（不去重），用于“总和”统计
+  const all = [];
+  if (includeCounties && state.countiesFC) all.push(...state.countiesFC.features);
+  if (includeAhj && state.ahjFC)           all.push(...state.ahjFC.features);
+
+  const total = all.length || 1;
+  let pos=0, mix=0, neg=0, unk=0;
+
+  all.forEach(f => {
+    const c = categorize(f.properties.public_sentiment);
+    if (c==='Positive') pos++;
+    else if (c==='Mixed') mix++;
+    else if (c==='Negative') neg++;
+    else unk++;
+  });
+
+  const pct = n => Math.round((n*1000)/total)/10;
+  document.getElementById('lg-pos').textContent = `${pos.toLocaleString()} (${pct(pos)}%)`;
+  document.getElementById('lg-mix').textContent = `${mix.toLocaleString()} (${pct(mix)}%)`;
+  document.getElementById('lg-neg').textContent = `${neg.toLocaleString()} (${pct(neg)}%)`;
+  document.getElementById('lg-unk').textContent = `${unk.toLocaleString()} (${pct(unk)}%)`;
+}
+
+    updateLegendCounts(true, true);
+
+
+    map.on('load', () => {
+      try { map.fitBounds(turf.bbox(state.countiesFC), {padding: 40, duration: 0}); } catch(e){}
+
+      map.addSource('counties', {type:'geojson', data: state.countiesFC, promoteId: 'display_name'});
+      map.addSource('ahj',      {type:'geojson', data: state.ahjFC,      promoteId: 'display_name'});
+      map.addSource('county-centers', {type:'geojson', data: state.countyCentersFC});
+
+      const fillExpr = [
+        'case',
+          ['==', ['typeof', ['get','public_sentiment']], 'number'],
+          ['step', ['get','public_sentiment'],
+            ['to-color', C_RED], 40,
+            ['to-color', C_ORANGE], 70,
+            ['to-color', C_GREEN]
+          ],
+          ['to-color', C_GREY]
+      ];
+      const lineColorExpr = fillExpr;
+
+      map.addLayer({
+        id:'counties-glow', type:'line', source:'counties',
+        paint:{
+          'line-color': lineColorExpr,
+          'line-opacity': [
+            'case',
+              ['==', ['typeof', ['get','public_sentiment']], 'number'], 0.25,
+              0.0
+          ],
+          'line-width': 6
+        }
+      });
+      map.addLayer({ id:'counties-fill', type:'fill', source:'counties', paint:{ 'fill-opacity': 0.6, 'fill-color': fillExpr } });
+      map.addLayer({ id:'counties-line', type:'line', source:'counties', paint:{'line-color': lineColorExpr, 'line-width': 2.25 } });
+
+      map.addLayer({
+        id:'ahj-glow', type:'line', source:'ahj',
+        paint:{
+          'line-color': lineColorExpr,
+          'line-opacity': [
+            'case',
+              ['==', ['typeof', ['get','public_sentiment']], 'number'], 0.28,
+              0.0
+          ],
+          'line-width': 7
+        }
+      });
+      map.addLayer({ id:'ahj-fill', type:'fill', source:'ahj', paint:{ 'fill-opacity': 0.6, 'fill-color': fillExpr } });
+      map.addLayer({ id:'ahj-line', type:'line', source:'ahj', paint:{'line-color': lineColorExpr, 'line-width': 2.75 } });
+
+      const svgFace = (type) => {
+        const mouth =
+          type === 'Positive'
+            ? `<path d="M8 14c1.2 1.3 2.6 2 4 2s2.8-.7 4-2"/>`
+            : type === 'Mixed'
+            ? `<line x1="9" y1="15" x2="15" y2="15"/>`
+            : `<path d="M8 16c1.2-1.3 2.6-2 4-2s2.8.7 4 2"/>`;
+        return `
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+     stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="12" cy="12" r="9"/>
+  <circle cx="9"  cy="10" r="0.8" fill="currentColor"/>
+  <circle cx="15" cy="10" r="0.8" fill="currentColor"/>
+  ${mouth}
+</svg>`;
+      };
+      function makePill(label, type){
+        const el = document.createElement('div');
+        el.className = `sent-pill ${type==='Positive'?'pill-pos':type==='Mixed'?'pill-mix':'pill-neg'}`;
+        el.innerHTML = `<span class="icon">${svgFace(type)}</span><span class="txt">${label}</span>`;
+        return el;
+      }
+      state.countyMarkers = [];
+      state.countyCentersFC.features.forEach(pt => {
+        const s = pt.properties.public_sentiment;
+        if (!Number.isFinite(s)) return;
+        const type = categorize(s);
+        const el = makePill(type, type);
+        const m = new mapboxgl.Marker({ element: el, anchor: 'center' })
+          .setLngLat(pt.geometry.coordinates)
+          .addTo(map);
+        state.countyMarkers.push(m);
+      });
+      function setCountyMarkersVisible(visible){
+        state.countyMarkers.forEach(m => {
+          m.getElement().style.display = visible ? '' : 'none';
+        });
+      }
+
+      map.addLayer({ id:'selected-outline', type:'line', source:'counties',
+        paint:{ 'line-color':'#22d3ee', 'line-width': 6, 'line-opacity': 0.9 },
+        filter:['==','display_name','__none__'] });
+      map.addLayer({ id:'selected-outline-ahj', type:'line', source:'ahj',
+        paint:{ 'line-color':'#fde047', 'line-width': 6.5, 'line-opacity': 0.95 },
+        filter:['==','display_name','__none__'] });
+
+      ['counties-fill','ahj-fill'].forEach(id=>{
+        map.on('mouseenter', id, ()=> map.getCanvas().style.cursor='pointer');
+        map.on('mouseleave', id, ()=> map.getCanvas().style.cursor='');
+      });
+
+      map.on('click', (e) => {
+        const ahjHits = map.queryRenderedFeatures(e.point, { layers: ['ahj-fill'] });
+        if (ahjHits.length) {
+          showFeature(ahjHits[0], 'AHJ');
+          return;
+        }
+        const countyHits = map.queryRenderedFeatures(e.point, { layers: ['counties-fill'] });
+        if (countyHits.length) {
+          showFeature(countyHits[0], 'County');
+        }
+      });
+
+      const tCounties = document.getElementById('toggle-counties');
+      const tAhj = document.getElementById('toggle-ahj');
+      tCounties.addEventListener('change', () => {
+  const v = tCounties.checked ? 'visible' : 'none';
+  map.setLayoutProperty('counties-fill','visibility',v);
+  map.setLayoutProperty('counties-line','visibility',v);
+  map.setLayoutProperty('counties-glow','visibility',v);
+  setCountyMarkersVisible(tCounties.checked);
+
+  if (!state.currentSelection) updateLegendCounts(tCounties.checked, tAhj.checked);
+});
+
+tAhj.addEventListener('change', () => {
+  const v = tAhj.checked ? 'visible' : 'none';
+  map.setLayoutProperty('ahj-fill','visibility',v);
+  map.setLayoutProperty('ahj-line','visibility',v);
+  map.setLayoutProperty('ahj-glow','visibility',v);
+
+  if (!state.currentSelection) updateLegendCounts(tCounties.checked, tAhj.checked);
+});
+
+      document.getElementById('loading').style.display='none';
+    });
+
+    // Search
+    function doSearch(q){
+      if (!q) return;
+      const ck = countyKey(q);
+      if (state.canonicalCountyIndex.has(ck)) {
+        const f = state.canonicalCountyIndex.get(ck);
+        showFeature(f, 'County');
+        try{ map.fitBounds(turf.bbox(f), {padding: 50, duration: 700}); }catch(e){}
+        return;
+      }
+      const results = state.fuse.search(q, { limit: 1 });
+      if (!results.length) { alert('No match found.'); return; }
+      const best = results[0].item;
+      const f = best.type === 'County' ? state.lookupCounty.get(best.name)
+                                       : state.lookupAhj.get(best.name);
+      if (!f) { alert('Matched name not present in map data.'); return; }
+      showFeature(f, best.type);
+      try{ map.fitBounds(turf.bbox(f), {padding: 50, duration: 700}); }catch(e){}
+    }
+    document.getElementById('searchBtn').addEventListener('click', () => {
+      doSearch(document.getElementById('searchInput').value.trim());
+    });
+    document.getElementById('searchInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doSearch(e.target.value.trim());
+    });
+
+    function colorFor(s){
+      if (!isNum(s)) return C_GREY;
+      if (s >= 70) return C_GREEN;
+      if (s >= 40) return C_ORANGE;
+      return C_RED;
+    }
+
+    function pillColors(cat){
+      switch(cat){
+        case 'Positive': return {bg:'rgba(22,163,74,0.22)',  fg:'#14532d'};
+        case 'Mixed':    return {bg:'rgba(245,158,11,0.24)', fg:'#7a3e00'};
+        case 'Negative': return {bg:'rgba(239,68,68,0.22)',  fg:'#7f1d1d'};
+        default:         return {bg:'rgba(156,163,175,0.28)',fg:'#374151'};
+      }
+    }
+    // Return the Mixed/Positive/Negative pill as inline HTML
+    function pillHtml(cat){
+    const cls = cat==='Positive' ? 'p-pos' : cat==='Mixed' ? 'p-mix' : cat==='Negative' ? 'p-neg' : 'p-unk';
+    return `<span class="pill ${cls}">${cat}</span>`;
+    }
+
+    // Extract Moratorium value(s) from project rows for this selection
+    function moratoriumFromRows(rows){
+  // No rows selected → treat as N/A (unknown), grey dot
+  if (!rows || !rows.length) return { value: 'N/A', tag: 'na' };
+
+  // Collect distinct, non-empty strings
+  const vals = [...new Set(
+    rows
+      .map(r => (r['Moratorium'] ?? '').toString().trim())
+      .filter(v => v !== '')
+  )];
+
+  // Empty after trimming → N/A, grey dot
+  if (vals.length === 0) return { value: 'N/A', tag: 'na' };
+
+  // All values are literally "None" → green dot
+  const allNone = vals.every(v => /^none$/i.test(v));
+  if (allNone) return { value: 'None', tag: 'none' };
+
+  // Otherwise return the combined values (e.g., "Yes", "Temporary", etc.)
+  return { value: vals.join(', '), tag: 'other' };
+}
+
+
+    function showFeature(f, typeLabel){
+      const name = f.properties.display_name || '(unnamed)';
+      const s = Number(f.properties.public_sentiment);
+      const cat = categorize(s);
+      const {bg, fg} = pillColors(cat);
+
+      try{
+        const c = turf.centerOfMass(f).geometry.coordinates;
+        new mapboxgl.Popup({closeButton:true, closeOnClick:true})
+          .setLngLat(c)
+          .setHTML(`
+            <div style="min-width:220px">
+              <div style="font-weight:700">${name}</div>
+              <div style="color:#6b7280;margin:4px 0">${typeLabel}</div>
+              <div>Public sentiment: <b>${Number.isFinite(s)? s.toFixed(1): '—'}</b></div>
+              <div style="margin-top:6px">
+                <span style="background:${bg};border-radius:12px;padding:4px 10px;font-weight:700;color:${fg};">${cat}</span>
+              </div>
+              <div class="muted" style="margin-top:6px;">Project details shown in sidebar ↓</div>
+            </div>`)
+          .addTo(map);
+      }catch(e){}
+
+      document.getElementById('sel-name').textContent = name;
+      document.getElementById('sel-type').textContent = typeLabel;
+      // --- Moratorium value from the project CSV rows for this selection ---
+// --- Moratorium value from the project CSV rows for this selection ---
+const { value: moratorium, tag: moriTag } = (function(){
+  let rows = [];
+  if (typeLabel === 'County'){
+    rows = state.projectByAHJCountyKey.get(countyKey(name)) || [];
+  } else {
+    rows = state.projectAHJRows.get(norm(name)) || [];
+  }
+  return moratoriumFromRows(rows);
+})();
+
+// Build the Selection panel lines — dot first
+// Green if literal "None", Red if "Yes", Grey if N/A (empty), else Green by default
+const dotClass =
+  (moriTag === 'none') ? 'dot-green'
+  : (/^yes$/i.test(moratorium) ? 'dot-red'
+  : (moriTag === 'na' ? 'dot-grey' : 'dot-green'));
+
+const moriHTML =
+  `<div class="mor-row"><span class="dot ${dotClass}"></span><span>Moratorium: ${HTML.esc(moratorium)}</span></div>`;
+
+const scoreEl = document.getElementById('sel-score');
+const scoreTxt = Number.isFinite(s) ? s.toFixed(1) : '—';
+scoreEl.innerHTML = moriHTML + `<div>Public sentiment score: ${scoreTxt} ${pillHtml(cat)}</div>`;
+
+
+// Hide the old standalone pill element (we now render it inline with the score)
+const oldPill = document.getElementById('sel-pill');
+if (oldPill){ oldPill.style.display = 'none'; }
+
+      let rows = [];
+      if (typeLabel === 'County'){
+        rows = state.projectByAHJCountyKey.get(countyKey(name)) || [];
+        map.setFilter('selected-outline-ahj', ['==','display_name','__none__']);
+        map.setFilter('selected-outline', ['==','display_name', name]);
+      } else {
+        rows = state.projectAHJRows.get(norm(name)) || [];
+        map.setFilter('selected-outline', ['==','display_name','__none__']);
+        map.setFilter('selected-outline-ahj', ['==','display_name', name]);
+      }
+
+      renderJurisdictionBox(rows);
+      renderProjectsBox(rows);
+      state.currentSelection = { type: typeLabel, name, rows };
+      updateProjectLegend(rows);
+    }
+  }).catch(err=>{
+    console.error(err);
+    alert('Failed to load one or more files. Check console for details.');
+  });
+</script>
+</body>
+</html>
